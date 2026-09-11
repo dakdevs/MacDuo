@@ -1,7 +1,7 @@
 import Foundation
 
 /// Fills display frames between quantized HID reports. Repeated polls establish
-/// liveness; only changed angles update the motion estimate.
+/// liveness and stop detection; changed angles update the motion estimate.
 struct LidMotion {
     private struct Report {
         var degrees: Double
@@ -21,6 +21,8 @@ struct LidMotion {
         var velocityOffset = 0.0
         var correctionDuration = 0.04
         var reports: [Report] = []
+        var stopTime: TimeInterval?
+        var stopPosition = 0.0
     }
 
     private var estimate: Estimate?
@@ -49,6 +51,22 @@ struct LidMotion {
         current.pollTime = timestamp
         let step = degrees - current.measured
         guard step != 0 else {
+            // Decide from an actual poll, never a future presentation timestamp.
+            // Slow movement can need several device refreshes to cross a degree;
+            // allow another half-degree for the unknown quantization phase.
+            // Before velocity is confirmed, wait for two device updates.
+            let quantizationDelay = current.velocity == 0
+                ? current.cadence * 1.5 : 1.5 / abs(current.velocity)
+            let stopDelay = current.cadence
+                + 2 * max(0, quantizationDelay - current.cadence) + 1.0 / 60
+            if current.stopTime == nil && timestamp - current.reportTime >= stopDelay - 0.000001 {
+                current.stopPosition = Self.point(current, at: timestamp).position
+                current.stopTime = timestamp
+                current.velocity = 0
+                current.previousStep = 0
+                current.directionalTravel = 0
+                current.reports.removeAll(keepingCapacity: true)
+            }
             estimate = current
             return
         }
@@ -71,9 +89,6 @@ struct LidMotion {
         let anchor = current.reports[0]
         var velocity = moving && interval <= 0.25 ? (degrees - anchor.degrees) / (timestamp - anchor.time) : 0
         velocity = min(Self.maximumVelocity, max(-Self.maximumVelocity, velocity))
-        if velocity * current.velocity > 0 {
-            velocity = 0.75 * velocity + 0.25 * current.velocity
-        }
         let target = !moving && abs(step) <= 2 ? (degrees + current.measured) * 0.5 : degrees
         // Report spacing includes quantization: at slow speeds, several device
         // reports can legitimately contain the same angle.
@@ -93,6 +108,7 @@ struct LidMotion {
                 * (velocity > 0 ? 1 : -1)
             current.velocityOffset = startVelocity - velocity
         }
+        current.stopTime = nil
         current.measured = degrees
         current.target = target
         current.reportTime = timestamp
@@ -109,22 +125,17 @@ struct LidMotion {
     }
 
     private static func point(_ estimate: Estimate, at timestamp: TimeInterval) -> (position: Double, velocity: Double) {
-        let age = max(0, timestamp - estimate.reportTime)
-        let horizon = estimate.cadence + 0.04
-        let projected = estimate.velocity * min(age, horizon)
-        var target = estimate.target
-        var displacement = min(maximumPrediction, max(-maximumPrediction, projected))
-        var velocity = age <= horizon && abs(projected) <= maximumPrediction ? estimate.velocity : 0
-        // Once another report should have arrived, return to the held reading.
-        // The displacement cap bounds unavoidable overshoot after an unseen stop.
-        if age > horizon {
-            let u = min(1, (age - horizon) / 0.08)
+        if let stopTime = estimate.stopTime {
+            let u = min(1, max(0, timestamp - stopTime) / 0.06)
             let blend = u * u * u * (10 + u * (-15 + 6 * u))
-            let derivative = 30 * u * u * (1 - u) * (1 - u) / 0.08
-            velocity = -(displacement + estimate.target - estimate.measured) * derivative
-            target = estimate.measured + (estimate.target - estimate.measured) * (1 - blend)
-            displacement *= 1 - blend
+            let displacement = estimate.stopPosition - estimate.measured
+            let velocity = -displacement * 30 * u * u * (1 - u) * (1 - u) / 0.06
+            return (estimate.measured + displacement * (1 - blend), velocity)
         }
+        let age = max(0, timestamp - estimate.reportTime)
+        let projected = estimate.velocity * age
+        let displacement = min(maximumPrediction, max(-maximumPrediction, projected))
+        var velocity = abs(projected) <= maximumPrediction ? estimate.velocity : 0
 
         // Reconcile the new report without a position or velocity discontinuity.
         let duration = estimate.correctionDuration
@@ -134,6 +145,6 @@ struct LidMotion {
         let correction = estimate.positionOffset * h00 + estimate.velocityOffset * duration * h10
         velocity += estimate.positionOffset * (6 * u * u - 6 * u) / duration
             + estimate.velocityOffset * (3 * u * u - 4 * u + 1)
-        return (target + displacement + correction, velocity)
+        return (estimate.target + displacement + correction, velocity)
     }
 }

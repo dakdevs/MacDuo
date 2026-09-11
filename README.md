@@ -24,7 +24,7 @@ Install missing command line tools with `xcode-select --install`. The app is bui
 ## Use
 
 1. Choose **Allow Screen Recording** and enable MacDuo in **System Settings → Privacy & Security → Screen & System Audio Recording**. Relaunch if prompted.
-2. Open **Preview & calibration** to adjust your eye position, or choose **Reset to straight-on** for the centered view.
+2. Open **Preview & calibration** to adjust your eye position. Use an eye height of **0 cm** for a low view from keyboard level, or **Reset to straight-on** for the centered view.
 3. Click **Enable effect** and lower the lid below 90°.
 
 Press **Control–Option–Command–L** to pause. The menu also includes an eight-second demo.

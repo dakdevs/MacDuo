@@ -2,6 +2,7 @@ import AppKit
 import CoreVideo
 import MetalKit
 import MetalPerformanceShaders
+import QuartzCore
 
 private struct RenderFailure: LocalizedError {
     let message: String
@@ -90,6 +91,8 @@ final class PlaneRenderer: NSObject, MTKViewDelegate {
         view.colorPixelFormat = .bgra8Unorm
         view.clearColor = MTLClearColorMake(0, 0, 0, 1)
         view.framebufferOnly = true
+        // Keep one fewer frame queued so the image follows the lid sooner.
+        (view.layer as? CAMetalLayer)?.maximumDrawableCount = 2
         view.isPaused = true
         view.enableSetNeedsDisplay = true
         view.autoResizeDrawable = true
