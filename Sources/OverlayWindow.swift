@@ -3,10 +3,14 @@ import MetalKit
 
 @MainActor final class OverlayWindow: NSPanel {
     let renderer: PlaneRenderer
+    private let metalView: MTKView
 
     init(screen: NSScreen) throws {
         let view = MTKView(frame: NSRect(origin: .zero, size: screen.frame.size))
+        metalView = view
         renderer = try PlaneRenderer(view: view)
+        // The display link is the only source of visible overlay draws.
+        view.enableSetNeedsDisplay = false
         super.init(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         contentView = view
         isReleasedWhenClosed = false
@@ -24,6 +28,8 @@ import MetalKit
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+
+    func drawFrame() { metalView.draw() }
 
     func hideAndDiscard() {
         orderOut(nil)

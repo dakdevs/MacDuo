@@ -87,12 +87,12 @@ struct ProjectionChecks {
         // Independent oracle: project V toward the eye onto the actual tilted plane.
         // This uses the general vector line/plane intersection, the opposite direction
         // from the production inverse, and catches cosine signs and fake sine shrinking.
-        var recoveredTargets = 0
+        var checkedTargets = 0
         for calibration in [ViewCalibration(perspective: 1), ViewCalibration(distanceCM: 85, heightCM: 25, screenHeightCM: 22.4, frost: 1, perspective: 1)] {
             let eye = SIMD3<Float>(0, calibration.heightCM / calibration.screenHeightCM,
                                   calibration.distanceCM / calibration.screenHeightCM)
             let aspect: Float = 1.6
-            for angle: Float in [40, 50, 60, 75, 90] {
+            for angle: Float in [40, 45, 50, 60, 75, 85, 89, 90] {
                 let radians = angle * .pi / 180
                 let tangent = SIMD3<Float>(0, sin(radians), cos(radians))
                 let normal = simd_cross(SIMD3<Float>(1, 0, 0), tangent)
@@ -107,14 +107,25 @@ struct ProjectionChecks {
                         guard let recovered = PlaneProjection(degrees: angle, calibration: calibration).sourceUV(panelUV) else {
                             throw CheckFailure(message: "A visible virtual target was incorrectly clipped at \(angle)°.")
                         }
-                        try check(simd_distance(recovered, SIMD2(targetU, targetV)) < 0.00002,
-                                  "The physical and virtual points are not on the same eye ray at \(angle)°.")
-                        recoveredTargets += 1
+                        let uprightTarget = SIMD2(targetU, targetV)
+                        if angle == 85 || angle == 89 {
+                            let fullDisplacement = simd_distance(uprightTarget, panelUV)
+                            if fullDisplacement > 0.0001 {
+                                let fraction = simd_distance(recovered, panelUV) / fullDisplacement
+                                let expected: ClosedRange<Float> = angle == 85 ? 0.76...0.8 : 0.69...0.72
+                                try check(expected.contains(fraction),
+                                          "Initial stretch should be gentler than the full eye-ray correction at \(angle)°.")
+                            }
+                        } else {
+                            try check(simd_distance(recovered, uprightTarget) < 0.00002,
+                                      "The physical and virtual points are not on the same eye ray at \(angle)°.")
+                        }
+                        checkedTargets += 1
                     }
                 }
             }
         }
-        try check(recoveredTargets > 70, "The oracle did not exercise enough visible targets.")
+        try check(checkedTargets > 70, "The oracle did not exercise enough visible targets.")
         let point = SIMD2<Float>(0.25, 0.375)
         var displacements: [Float] = []
         for strength: Float in [0, 0.25, 0.55, 1] {
@@ -139,7 +150,7 @@ struct ProjectionChecks {
         let invalid = PlaneProjection(degrees: 60, calibration: ViewCalibration(perspective: .nan))
         try check(invalid.sourceUV(point) == PlaneProjection(degrees: 60, calibration: ViewCalibration()).sourceUV(point),
                   "Invalid perspective strength should restore the finite default.")
-        print("PASS: \(recoveredTargets) independently projected visible targets recovered; strength endpoints, reduced displacement, and clipping checked.")
+        print("PASS: \(checkedTargets) independent ray targets checked; gentle entry, strength endpoints, reduced displacement, and clipping checked.")
     }
 
     @MainActor

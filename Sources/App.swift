@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import QuartzCore
 
 @MainActor final class AppController: NSObject, NSApplicationDelegate {
     private let sensor = LidAngleSensor()
@@ -10,7 +11,8 @@ import CoreGraphics
     private let pauseHint = NSMenuItem(title: "Pause shortcut: ⌃⌥⌘L", action: nil, keyEquivalent: "")
     private var hotKey: PauseHotKey?
     private var timer: Timer?
-    private var animationTimer: Timer?
+    private var displayLink: DisplayClock?
+    private var framePacing = FramePacing()
     private var motion = LidMotion()
     private var transition = EffectTransition()
     private var overlay: OverlayWindow?
@@ -89,7 +91,7 @@ import CoreGraphics
         overlay?.orderOut(nil)
         sensor.stop()
         timer?.invalidate()
-        animationTimer?.invalidate()
+        displayLink?.invalidate()
         stopCapture()
         writeDiagnostic(force: true)
     }
@@ -102,8 +104,12 @@ import CoreGraphics
     }
 
     private var effectAngle: Double? {
+        effectAngle(at: now)
+    }
+
+    private func effectAngle(at timestamp: TimeInterval) -> Double? {
         if let start = demoStart {
-            let elapsed = now - start
+            let elapsed = timestamp - start
             if elapsed < 8 {
                 // One reversible eight-second gesture, then return to measured angle.
                 return 94 - 56 * pow(sin(Double.pi * elapsed / 8), 2)
@@ -196,6 +202,11 @@ import CoreGraphics
         guard overlay == nil, let screen else { return }
         overlay = try OverlayWindow(screen: screen)
         overlay?.renderer.onFailure = { [weak self] error in self?.captureFailed(error) }
+        if diagnosticPath != nil {
+            overlay?.renderer.onFramePresented = { [weak self] timestamp, gpuMilliseconds in
+                self?.framePacing.recordPresentation(at: timestamp, gpuDurationMilliseconds: gpuMilliseconds)
+            }
+        }
     }
 
     private func beginCapture() {
@@ -236,48 +247,70 @@ import CoreGraphics
         }
     }
 
-    private func updateOverlay() {
+    private func updateOverlay(at presentationTime: TimeInterval? = nil) {
         guard let overlay else { return }
-        guard enabled, !suspended, !previewOpen, permission, angle != nil,
+        guard enabled, !suspended, !previewOpen, permission, angle != nil, let screen,
               let degrees = effectAngle, degrees < 90, snapshotTask == nil,
               overlay.renderer.isReadyForPresentation else {
             overlay.orderOut(nil)
             overlay.alphaValue = 0
             transition.reset()
-            animationTimer?.invalidate()
-            animationTimer = nil
+            displayLink?.invalidate()
+            displayLink = nil
             return
         }
-        overlay.renderer.calibration = calibration
-        let projected = demoStart == nil ? (motion.value(at: now) ?? degrees) : degrees
+        if displayLink == nil {
+            guard let displayID = Self.displayID(screen) else {
+                captureFailed("The built-in display is unavailable.")
+                return
+            }
+            let refreshRate = min(120, max(1, screen.maximumFramesPerSecond))
+            framePacing.reset(requestedFramesPerSecond: refreshRate)
+            overlay.alphaValue = 0
+            overlay.orderFrontRegardless()
+            do {
+                displayLink = try DisplayClock(displayID: displayID) { [weak self] target in
+                    self?.displayFrame(at: target)
+                }
+            } catch {
+                captureFailed(error.localizedDescription)
+                return
+            }
+        }
+        // Sensor and housekeeping callbacks change eligibility only. A display
+        // callback owns each angle sample and explicit Metal draw.
+        guard let timestamp = presentationTime else { return }
+        let projected = demoStart == nil ? (motion.value(at: timestamp) ?? degrees)
+                                         : (effectAngle(at: timestamp) ?? degrees)
         let firstFrame = transition.startedAt == nil
-        let timestamp = now
         let frame = transition.frame(targetDegrees: projected, at: timestamp)
         overlay.renderer.degrees = Float(frame.degrees)
-        overlay.alphaValue = frame.opacity
+        if overlay.alphaValue != frame.opacity { overlay.alphaValue = frame.opacity }
         if firstFrame {
             entryFrames.removeAll(keepingCapacity: true)
-            overlay.orderFrontRegardless()
         }
         if diagnosticPath != nil, let start = transition.startedAt,
            timestamp - start <= 0.3, entryFrames.count < 100 {
             entryFrames.append(["elapsed": timestamp - start, "measured": degrees,
+                                "sampled": projected,
                                 "rendered": frame.degrees, "opacity": frame.opacity])
         }
-        if animationTimer == nil {
-            let refreshRate = min(120, max(60, screen?.maximumFramesPerSecond ?? 60))
-            let timer = Timer(timeInterval: 1 / Double(refreshRate), repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.updateOverlay() }
-            }
-            animationTimer = timer
-            RunLoop.main.add(timer, forMode: .common)
-        }
+        overlay.drawFrame()
+    }
+
+    private func displayFrame(at target: TimeInterval) {
+        guard displayLink != nil else { return }
+        if diagnosticPath != nil { framePacing.recordDisplayTarget(target) }
+        // Convert the display's media clock to the sensor's uptime clock and
+        // predict only to this frame's deadline, within the existing motion bound.
+        let lead = min(0.025, max(0, target - CACurrentMediaTime()))
+        updateOverlay(at: now + lead)
     }
 
     private func stopCapture() {
         transition.reset()
-        animationTimer?.invalidate()
-        animationTimer = nil
+        displayLink?.invalidate()
+        displayLink = nil
         guard snapshotAttempted || snapshotTask != nil || overlay?.renderer.hasFrame == true else { return }
         overlay?.hideAndDiscard()
         generation += 1
@@ -294,8 +327,8 @@ import CoreGraphics
         snapshotTask?.cancel()
         snapshotTask = nil
         overlay?.hideAndDiscard()
-        animationTimer?.invalidate()
-        animationTimer = nil
+        displayLink?.invalidate()
+        displayLink = nil
         // Keep the attempted flag: a failed gesture must not become repeated screenshots.
         updateUI()
     }
@@ -504,6 +537,8 @@ import CoreGraphics
             "eyeHeightCM": calibration.heightCM,
             "screenHeightCM": calibration.screenHeightCM,
             "perspectiveStrength": calibration.perspective,
+            "maximumFramesPerSecond": screen?.maximumFramesPerSecond ?? 0,
+            "framePacing": framePacing.diagnostics,
             "measuredAngle": angle as Any? ?? NSNull(),
             "renderAngle": effectAngle as Any? ?? NSNull(),
             "smoothedAngle": motion.value(at: now) as Any? ?? NSNull(),

@@ -1,5 +1,6 @@
 import AppKit
 import MetalKit
+import QuartzCore
 
 @MainActor final class PreviewWindow: NSWindowController, NSWindowDelegate {
     var onClose: (() -> Void)?
@@ -7,7 +8,7 @@ import MetalKit
     var onPermission: (() -> Void)?
     var onEnable: (() -> Void)?
     var sampleSmoothedAngle: (() -> Double?)?
-    private var followTimer: Timer?
+    private var followDisplayLink: CADisplayLink?
     private let liveLabel = NSTextField(labelWithString: "Reading lid sensor…")
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private let angleLabel = NSTextField(labelWithString: "65°")
@@ -119,13 +120,16 @@ import MetalKit
         statusLabel.stringValue = status
         permissionButton.isHidden = permission
         enableButton.isEnabled = permission && angle != nil
-        if followButton.state == .on { renderLiveAngle() }
     }
 
     func windowWillClose(_ notification: Notification) {
-        followTimer?.invalidate()
-        followTimer = nil
+        followDisplayLink?.invalidate()
+        followDisplayLink = nil
         onClose?()
+    }
+
+    func windowDidChangeScreen(_ notification: Notification) {
+        if followButton.state == .on { followChanged() }
     }
 
     private func addCalibrationRow(to root: NSStackView, title: String, tag: Int, value: Double, min: Double, max: Double) {
@@ -155,17 +159,21 @@ import MetalKit
     }
 
     @objc private func followChanged() {
-        followTimer?.invalidate()
-        followTimer = nil
+        followDisplayLink?.invalidate()
+        followDisplayLink = nil
         angleSlider.isEnabled = followButton.state != .on
         if followButton.state == .off { angleChanged(); return }
+        guard let window, window.isVisible else { return }
+        let link = window.displayLink(target: self, selector: #selector(followDisplayLinkDidFire(_:)))
+        let refreshRate = Float(min(120, window.screen?.maximumFramesPerSecond ?? 60))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: refreshRate, maximum: refreshRate, preferred: refreshRate)
+        followDisplayLink = link
+        link.add(to: .main, forMode: .common)
+    }
+
+    @objc private func followDisplayLinkDidFire(_ link: CADisplayLink) {
+        guard link === followDisplayLink, followButton.state == .on, window?.isVisible == true else { return }
         renderLiveAngle()
-        let refreshRate = min(120, max(60, window?.screen?.maximumFramesPerSecond ?? 60))
-        let timer = Timer(timeInterval: 1 / Double(refreshRate), repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.renderLiveAngle() }
-        }
-        followTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func renderLiveAngle() {

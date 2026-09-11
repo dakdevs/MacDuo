@@ -31,6 +31,13 @@ private final class CapturedFrameLease: @unchecked Sendable {
     }
 }
 
+// Only completed GPU timestamps are read from this immutable command reference
+// after drawable presentation; no encoding or mutation crosses the callback queue.
+private struct PresentedCommandTiming: @unchecked Sendable {
+    let command: MTLCommandBuffer
+    var milliseconds: Double { (command.gpuEndTime - command.gpuStartTime) * 1000 }
+}
+
 /// Uniform ABI: three float4 vectors, 16-byte aligned; offsets 0, 16, 32, stride 48.
 private struct PlaneUniforms {
     var ray: SIMD4<Float>
@@ -43,6 +50,8 @@ final class PlaneRenderer: NSObject, MTKViewDelegate {
     var degrees: Float = 90 { didSet { requestDraw() } }
     var calibration = ViewCalibration() { didSet { requestDraw() } }
     var onFailure: ((String) -> Void)?
+    /// Actual drawable presentation time (CACurrentMediaTime base), plus GPU milliseconds.
+    var onFramePresented: ((Double, Double) -> Void)?
     private(set) var hasFrame = false
     private(set) var isReadyForPresentation = false
 
@@ -278,12 +287,29 @@ final class PlaneRenderer: NSObject, MTKViewDelegate {
         guard let drawable = view.currentDrawable,
               let descriptor = view.currentRenderPassDescriptor else { return }
         do {
+            let generation = frameGeneration
             let command = try encode(descriptor: descriptor)
+            if onFramePresented != nil {
+                let timing = PresentedCommandTiming(command: command)
+                drawable.addPresentedHandler { [weak self] presented in
+                    let timestamp = presented.presentedTime
+                    guard timestamp > 0 else { return }
+                    Task { @MainActor [weak self] in
+                        guard let self, self.frameGeneration == generation else { return }
+                        let gpuMilliseconds = timing.milliseconds
+                        guard gpuMilliseconds.isFinite, gpuMilliseconds >= 0 else { return }
+                        self.onFramePresented?(timestamp, gpuMilliseconds)
+                    }
+                }
+            }
             command.present(drawable)
             command.addCompletedHandler { [weak self] result in
                 guard result.status == .error else { return }
                 let message = result.error?.localizedDescription ?? "The GPU could not draw the desktop."
-                Task { @MainActor [weak self] in self?.onFailure?(message) }
+                Task { @MainActor [weak self] in
+                    guard let self, self.frameGeneration == generation else { return }
+                    self.onFailure?(message)
+                }
             }
             command.commit()
         } catch { onFailure?(error.localizedDescription) }
@@ -366,7 +392,8 @@ final class PlaneRenderer: NSObject, MTKViewDelegate {
     }
 
     private func requestDraw() {
-        view?.needsDisplay = true
+        guard let view, view.enableSetNeedsDisplay else { return }
+        view.needsDisplay = true
     }
 
     private func encode(descriptor: MTLRenderPassDescriptor) throws -> MTLCommandBuffer {
@@ -433,12 +460,13 @@ final class PlaneRenderer: NSObject, MTKViewDelegate {
         if (u.style.x <= 0) return float4(0,0,0,1);
         float panelHeight = 1 - in.uv.y;
         float2 uv = in.uv;
-        if (u.style.w > 0) {
+        float correctionStrength = u.style.w * (.7 + .3 * smoothstep(0.0, .25, u.style.y));
+        if (correctionStrength > 0) {
             float denominator = u.ray.x - panelHeight * u.ray.z;
             if (denominator <= .00001) return float4(0,0,0,1);
             float2 projected = float2(.5 + (in.uv.x - .5) * u.ray.x / denominator,
                 1 - panelHeight * (u.ray.x * u.ray.y - u.ray.w * u.ray.z) / denominator);
-            uv = mix(in.uv, projected, u.style.w);
+            uv = mix(in.uv, projected, correctionStrength);
         }
         // A panel-space aperture provides top separation without moving any
         // surviving texture coordinates. This is the same curve as topRetreat.
@@ -475,7 +503,7 @@ final class PlaneRenderer: NSObject, MTKViewDelegate {
                 float edgeDenominator = u.ray.x - (1.0 - topRetreat) * u.ray.z;
                 float fullScale = (u.ray.x * u.ray.y - u.ray.w * u.ray.z) * u.ray.x
                                 / (edgeDenominator * edgeDenominator);
-                float sourceYScale = max(.0001, mix(1.0, fullScale, u.style.w));
+                float sourceYScale = max(.0001, mix(1.0, fullScale, correctionStrength));
                 float panelDistance = in.uv.y - topRetreat;
                 lowCoverage *= normalCDF(panelDistance * sourceYScale / (u.texel.y * lowSigma));
                 highCoverage *= normalCDF(panelDistance * sourceYScale / (u.texel.y * highSigma));

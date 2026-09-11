@@ -30,6 +30,13 @@ struct PlaneProjection {
         calibration.perspective.isFinite ? min(1, max(0, calibration.perspective)) : 1
     }
 
+    /// Ease the initial stretch into full physical correction over the first 15°.
+    var projectionStrength: Float {
+        let progress = min(1, max(0, (90 - degrees) / 15))
+        let eased = progress * progress * (3 - 2 * progress)
+        return perspectiveStrength * (0.7 + 0.3 * eased)
+    }
+
     private var isValid: Bool {
         degrees.isFinite && calibration.distanceCM.isFinite && calibration.distanceCM > 0
             && calibration.heightCM.isFinite && calibration.heightCM >= 0
@@ -39,14 +46,14 @@ struct PlaneProjection {
     func sourceUV(_ panelUV: SIMD2<Float>) -> SIMD2<Float>? {
         guard isValid, panelUV.x.isFinite, panelUV.y.isFinite else { return nil }
         var source = panelUV
-        if perspectiveStrength > 0 {
+        if projectionStrength > 0 {
             let ray = rayCoefficients
             let physicalHeight = 1 - panelUV.y
             let denominator = ray.x - physicalHeight * ray.z
             guard denominator > 0.00001 else { return nil }
             let projected = SIMD2<Float>(0.5 + (panelUV.x - 0.5) * ray.x / denominator,
                                           1 - physicalHeight * (ray.x * ray.y - ray.w * ray.z) / denominator)
-            source = simd_mix(panelUV, projected, SIMD2(repeating: perspectiveStrength))
+            source = simd_mix(panelUV, projected, SIMD2(repeating: projectionStrength))
         }
         // Clip after blending: a softer correction exposes fewer black side wedges.
         guard source.x.isFinite, source.y.isFinite,

@@ -6,7 +6,7 @@
 
 A Swift menu bar app that makes your desktop appear to stay upright as you close your MacBook lid, with progressive blur and fading.
 
-It prepares a screenshot at 92° and eases into the effect below 90°. Opening the lid to 90° restores your desktop.
+It prepares a screenshot at 92° and eases into the effect below 90°, with display-synchronized animation up to 120 fps. Opening the lid to 90° restores your desktop.
 
 ## Build and run
 
