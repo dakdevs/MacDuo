@@ -1,0 +1,22 @@
+# Local builds and verification output
+*.app/
+.build/
+build/
+DerivedData/
+verification/
+work/
+*.dSYM/
+*.swiftmodule
+*.swiftdoc
+*.swiftsourceinfo
+*.abi.json
+
+# Local diagnostics and editor state
+*-state.json
+*-diagnostics.json
+*.log
+.DS_Store
+.idea/
+.vscode/
+*.xcuserstate
+xcuserdata/
