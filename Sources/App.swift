@@ -419,7 +419,12 @@ import QuartzCore
         }
         if let screen, let id = Self.displayID(screen) {
             let centimeters = Float(CGDisplayScreenSize(id).height / 10)
-            if centimeters.isFinite, (10...40).contains(centimeters) { calibration.screenHeightCM = centimeters }
+            if centimeters.isFinite, (10...40).contains(centimeters) {
+                calibration.screenHeightCM = centimeters
+                if UserDefaults.standard.object(forKey: "eyeHeight") == nil {
+                    calibration.heightCM = centimeters / 2
+                }
+            }
         }
     }
 
@@ -506,13 +511,19 @@ import QuartzCore
 
     private func loadCalibration() {
         let defaults = UserDefaults.standard
+        let baseline = ViewCalibration(screenHeightCM: calibration.screenHeightCM)
+        calibration = baseline
         if defaults.object(forKey: "eyeDistance") != nil {
-            calibration.distanceCM = valid(defaults.float(forKey: "eyeDistance"), range: 30...120, fallback: 60)
-            calibration.heightCM = valid(defaults.float(forKey: "eyeHeight"), range: 10...70, fallback: 34)
-            calibration.frost = valid(defaults.float(forKey: "frost"), range: 0...2, fallback: 1)
+            calibration.distanceCM = valid(defaults.float(forKey: "eyeDistance"), range: 30...120, fallback: baseline.distanceCM)
+        }
+        if defaults.object(forKey: "eyeHeight") != nil {
+            calibration.heightCM = valid(defaults.float(forKey: "eyeHeight"), range: 0...70, fallback: baseline.heightCM)
+        }
+        if defaults.object(forKey: "frost") != nil {
+            calibration.frost = valid(defaults.float(forKey: "frost"), range: 0...2, fallback: baseline.frost)
         }
         if defaults.object(forKey: "perspective") != nil {
-            calibration.perspective = valid(defaults.float(forKey: "perspective"), range: 0...1, fallback: 1)
+            calibration.perspective = valid(defaults.float(forKey: "perspective"), range: 0...1, fallback: baseline.perspective)
         }
     }
 

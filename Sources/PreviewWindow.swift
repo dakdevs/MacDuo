@@ -48,9 +48,10 @@ import QuartzCore
         let title = NSTextField(labelWithString: "An upright desktop. A moving lid.")
         title.font = .systemFont(ofSize: 23, weight: .semibold)
         root.addArrangedSubview(title)
-        let detail = NSTextField(wrappingLabelWithString: "Prepares at 92° and eases into the effect below 90°. Full perspective keeps the desktop upright from your calibrated viewpoint, with frost as the lid closes.")
+        let detail = NSTextField(wrappingLabelWithString: "Prepares at 92° and eases into the effect below 90°. The default view is straight on. Frost builds from a clear lower screen to a blurred top; adjust the eye position to match your view.")
         detail.textColor = .secondaryLabelColor
         root.addArrangedSubview(detail)
+        detail.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -48).isActive = true
 
         let metalView = MTKView()
         metalView.translatesAutoresizingMaskIntoConstraints = false
@@ -83,7 +84,7 @@ import QuartzCore
         root.addArrangedSubview(liveRow)
 
         addCalibrationRow(to: root, title: "Eye distance from hinge", tag: 0, value: Double(calibration.distanceCM), min: 30, max: 120)
-        addCalibrationRow(to: root, title: "Eye height above hinge", tag: 1, value: Double(calibration.heightCM), min: 10, max: 70)
+        addCalibrationRow(to: root, title: "Eye height above hinge", tag: 1, value: Double(calibration.heightCM), min: 0, max: 70)
         addCalibrationRow(to: root, title: "Frost strength", tag: 2, value: Double(calibration.frost), min: 0, max: 2)
         addCalibrationRow(to: root, title: "Perspective strength", tag: 3, value: Double(calibration.perspective), min: 0, max: 1)
 
@@ -100,7 +101,7 @@ import QuartzCore
         enableButton.action = #selector(enableEffect)
         enableButton.bezelStyle = .rounded
         enableButton.keyEquivalent = "\r"
-        let reset = NSButton(title: "Reset view", target: self, action: #selector(resetView))
+        let reset = NSButton(title: "Reset to straight-on", target: self, action: #selector(resetView))
         let actions = NSStackView(views: [reset, permissionButton, enableButton])
         actions.spacing = 12
         root.addArrangedSubview(actions)
@@ -197,8 +198,7 @@ import QuartzCore
 
     @objc private func resetView() {
         let screenHeight = calibration.screenHeightCM
-        calibration = ViewCalibration()
-        calibration.screenHeightCM = screenHeight
+        calibration = ViewCalibration(screenHeightCM: screenHeight)
         for (tag, value) in [(0, calibration.distanceCM), (1, calibration.heightCM), (2, calibration.frost), (3, calibration.perspective)] {
             sliders[tag]?.floatValue = value
             valueLabels[tag]?.stringValue = valueText(tag, Double(value))

@@ -4,7 +4,7 @@
 
 *Concept render of the perceived upright image plane.*
 
-A Swift menu bar app that makes your desktop appear to stay upright as you close your MacBook lid, with progressive blur and fading.
+A Swift menu bar app that makes your desktop appear to stay upright as you close your MacBook lid, with a straight-on perspective and blur that builds from a clear bottom to a frosted top.
 
 It prepares a screenshot at 92° and eases into the effect below 90°, with display-synchronized animation up to 120 fps. Opening the lid to 90° restores your desktop.
 
@@ -24,7 +24,7 @@ Install missing command line tools with `xcode-select --install`. The app is bui
 ## Use
 
 1. Choose **Allow Screen Recording** and enable MacDuo in **System Settings → Privacy & Security → Screen & System Audio Recording**. Relaunch if prompted.
-2. Open **Preview & calibration** from the menu bar to adjust the effect for your eye position.
+2. Open **Preview & calibration** to adjust your eye position, or choose **Reset to straight-on** for the centered view.
 3. Click **Enable effect** and lower the lid below 90°.
 
 Press **Control–Option–Command–L** to pause. The menu also includes an eight-second demo.
@@ -41,6 +41,6 @@ Run `./Scripts/verify.sh` on a compatible MacBook. See [verification](VERIFICATI
 
 ## Credits and license
 
-Inspired by [iphone-duo-macos-animation](https://github.com/lqSky7/iphone-duo-macos-animation), with sensor research from [LidAngleSensor](https://github.com/samhenrigold/LidAngleSensor). See [acknowledgments](THIRD_PARTY_NOTICES.md).
+Inspired by [iphone-duo-macos-animation](https://github.com/lqSky7/iphone-duo-macos-animation) and [João Franco’s demo](https://x.com/JoaoFranco_03/status/2098069223171916209), with sensor research from [LidAngleSensor](https://github.com/samhenrigold/LidAngleSensor). See [acknowledgments](THIRD_PARTY_NOTICES.md).
 
 [MIT license](LICENSE).

@@ -52,14 +52,16 @@ struct ProjectionChecks {
                 }
             }
         }
-        try check(PlaneProjection(degrees: 30, calibration: calibration).visibility == 0,
-                  "The plane must dissolve before its approximately 29.5° grazing angle.")
+        try check(PlaneProjection(degrees: 30, calibration: calibration).visibility == 1,
+                  "The centered default should remain lit at 30°, well above its grazing angle.")
+        try check(PlaneProjection(degrees: 12, calibration: calibration).visibility == 0,
+                  "The plane must dissolve before its approximately 10.6° centered grazing angle.")
         try check(PlaneProjection(degrees: .nan, calibration: calibration).sourceUV(SIMD2(0.5, 0.5)) == nil,
                   "Nonfinite sensor data must not enter geometry.")
 
-        // Independently worked eye-ray intersections in centimetres at45°,
-        // with eye(0,34,60) and physical screen height22.4cm. The top pixel sees
-        //58.37% down the upright image; the middle pixel sees82.35% down it.
+        try check(ViewCalibration(screenHeightCM: 30).heightCM == 15,
+                  "The default eye height must be centered on the detected physical screen height.")
+
         for (angle, expected): (Float, Float) in [(90, 0), (60, 0.12), (45, 0.22), (30, 0.22), (120, 0)] {
             let projection = PlaneProjection(degrees: angle, calibration: ViewCalibration())
             try check(abs(projection.topRetreat - expected) < 0.000001,
@@ -75,9 +77,18 @@ struct ProjectionChecks {
         let fortyFive = PlaneProjection(degrees: 45, calibration: ViewCalibration())
         let top = fortyFive.sourceUV(SIMD2(0.5, 0))!
         let middle = fortyFive.sourceUV(SIMD2(0.5, 0.5))!
-        try check(abs(top.y - 0.5837) < 0.0001 && abs(middle.y - 0.8235) < 0.0001,
-                  "Default45° projection does not match the independently worked eye rays.")
+        // Independently worked eye-ray intersections in centimetres at 45°,
+        // with the default centered eye(0, 11.2, 60) and physical screen
+        // height 22.4cm. The top and middle pixels see 21.86% and 66.87%
+        // down the upright image.
+        try check(abs(top.y - 0.2186) < 0.0001 && abs(middle.y - 0.6687) < 0.0001,
+                  "Default centered 45° projection does not match the independently worked eye rays.")
         try check(fortyFive.visibility == 1, "The confirmed viewpoint must keep the screen fully lit at45°.")
+        let oldElevated = PlaneProjection(degrees: 45, calibration: ViewCalibration(heightCM: 34))
+        let elevatedTop = oldElevated.sourceUV(SIMD2(0.5, 0))!
+        let elevatedMiddle = oldElevated.sourceUV(SIMD2(0.5, 0.5))!
+        try check(abs(elevatedTop.y - 0.5837) < 0.0001 && abs(elevatedMiddle.y - 0.8235) < 0.0001,
+                  "The explicit old elevated eye calibration should remain supported.")
         let elevated = ViewCalibration(distanceCM: 40, heightCM: 80)
         try check(PlaneProjection(degrees: 65, calibration: elevated).visibility == 0,
                   "Elevated eyes must fade before their own63.43° grazing angle, not an absolute45° threshold.")
@@ -193,7 +204,7 @@ struct ProjectionChecks {
             let actual = SIMD3<Float>(Float(components[0]), Float(components[1]), Float(components[2])) / 255
             try check(simd_distance(actual, expected) < 0.02, "GPU identity/orientation/color check failed at (\(x),\(y)): \(actual).")
         }
-        // Independent worked geometry: at 60°, output (.25,.375) looks through
+        // Independent worked geometry: at 60°, output (.25,.45) looks through
         // the tilted panel to the lower-left of the upright image (blue), although
         // an identity or opposite-cosine shader would show upper-left red there.
         renderer.calibration.frost = 0
@@ -202,7 +213,7 @@ struct ProjectionChecks {
         try renderer.renderPNG(to: perspectiveURL, width: width, height: height)
         let perspective = NSBitmapImageRep(data: try Data(contentsOf: perspectiveURL))!
         let perspectiveExpectations: [(Int, Int, SIMD3<Float>)] = [
-            (64, 52, SIMD3(0, 0, 1)), (64, 60, SIMD3(0, 0, 1)), (192, 60, SIMD3(1, 1, 0)),
+            (64, 60, SIMD3(1, 0, 0)), (64, 72, SIMD3(0, 0, 1)), (192, 72, SIMD3(1, 1, 0)),
             (5, 16, SIMD3(0, 0, 0))]
         for (x, y, expected) in perspectiveExpectations {
             var components = [Int](repeating: 0, count: perspective.samplesPerPixel)
@@ -216,14 +227,14 @@ struct ProjectionChecks {
         try renderer.renderPNG(to: uncorrectedURL, width: width, height: height)
         let uncorrected = NSBitmapImageRep(data: try Data(contentsOf: uncorrectedURL))!
         var zeroPixel = [Int](repeating: 0, count: uncorrected.samplesPerPixel)
-        uncorrected.getPixel(&zeroPixel, atX: 64, y: 60)
+        uncorrected.getPixel(&zeroPixel, atX: 64, y: 72)
         try check(zeroPixel[0] == 255 && zeroPixel[1] == 0 && zeroPixel[2] == 0,
                   "Zero GPU perspective should show the original red quadrant at60°, not the corrected blue quadrant.")
         renderer.calibration.perspective = 0.55
         let softenedURL = output.appendingPathComponent("gpu-perspective-55.png")
         try renderer.renderPNG(to: softenedURL, width: width, height: height)
         let softened = NSBitmapImageRep(data: try Data(contentsOf: softenedURL))!
-        for (x, y) in [(64, 60), (18, 16)] {
+        for (x, y) in [(64, 72), (18, 16)] {
             var components = [Int](repeating: 0, count: softened.samplesPerPixel)
             softened.getPixel(&components, atX: x, y: y)
             try check(components[0] > 250 && components[1] < 5 && components[2] < 5,
@@ -241,7 +252,7 @@ struct ProjectionChecks {
         try renderer.renderPNG(to: openingURL, width: width, height: height)
         try check(try Data(contentsOf: closingURL) == Data(contentsOf: openingURL),
                   "The same angle renders differently after reopening; the effect must not depend on direction history.")
-        renderer.degrees = 30
+        renderer.degrees = 12
         let closedURL = output.appendingPathComponent("gpu-closed.png")
         try renderer.renderPNG(to: closedURL, width: width, height: height)
         let closed = NSBitmapImageRep(data: try Data(contentsOf: closedURL))!
@@ -316,9 +327,11 @@ struct ProjectionChecks {
             return rowContrasts / Double(yRange.count)
         }
         var upperRatios: [Double] = []
-        var lowerRatio = 0.0
+        var middleRatios: [Double] = []
+        var lowerRatios: [Double] = []
         for angle: Float in [85, 75, 60, 45] {
             var upper: [Double] = []
+            var middle: [Double] = []
             var lower: [Double] = []
             for strength: Float in [0, 1] {
                 renderer.degrees = angle
@@ -327,25 +340,30 @@ struct ProjectionChecks {
                 try renderer.renderPNG(to: url, width: width, height: height)
                 let image = NSBitmapImageRep(data: try Data(contentsOf: url))!
                 let visibleTop = Int(PlaneProjection(degrees: angle, calibration: renderer.calibration).topRetreat * Float(height))
-                upper.append(contrast(image, yRange: (visibleTop + 48)..<(visibleTop + 168)))
+                let visibleHeight = height - visibleTop
+                upper.append(contrast(image, yRange: (visibleTop + Int(Float(visibleHeight) * 0.12))..<(visibleTop + Int(Float(visibleHeight) * 0.32))))
+                middle.append(contrast(image, yRange: (visibleTop + Int(Float(visibleHeight) * 0.44))..<(visibleTop + Int(Float(visibleHeight) * 0.56))))
                 lower.append(contrast(image, yRange: 330..<380))
             }
             try check(upper[0] > 0.4, "Zero frost unexpectedly blurred the projected checkerboard.")
             upperRatios.append(upper[1] / upper[0])
-            if angle == 60 { lowerRatio = lower[1] / lower[0] }
+            middleRatios.append(middle[1] / middle[0])
+            lowerRatios.append(lower[1] / lower[0])
         }
         try check(upperRatios[0] > upperRatios[1] && upperRatios[1] > upperRatios[2],
                   "Checkerboard diffusion did not increase progressively while closing: \(upperRatios).")
         try check(upperRatios[2] < 0.35, "The upper screen still has too much fine detail at 60°.")
         try check(upperRatios[3] < upperRatios[2] && upperRatios[3] < 0.1,
                   "The45° screen should have strong Gaussian diffusion away from the hinge.")
-        try check(lowerRatio > upperRatios[2] + 0.25,
-                  "The hinge should retain more detail than the upper screen.")
+        try check(middleRatios[2] > upperRatios[2] && middleRatios[2] < lowerRatios[2],
+                  "The 60° blur should be strongest at the top, partial in the middle, and weakest near the hinge.")
+        try check(lowerRatios[2] > 0.8 && lowerRatios[3] > 0.7,
+                  "The lower 15% should keep most checker detail instead of receiving blanket blur.")
         try check(retainedImage != nil, "The renderer released its snapshot before the gesture ended.")
         renderer.clearFrame()
         try check(retainedImage == nil, "The renderer retained its snapshot after clearFrame.")
         renderer.calibration.frost = 1
-        print("PASS: Gaussian blur upper contrast ratios at85/75/60/45° = \(upperRatios.map { String(format: "%.3f", $0) }.joined(separator: ", ")); hinge at60° = \(String(format: "%.3f", lowerRatio)). Snapshot released on clear.")
+        print("PASS: Gaussian blur upper contrast ratios at85/75/60/45° = \(upperRatios.map { String(format: "%.3f", $0) }.joined(separator: ", ")); middle = \(middleRatios.map { String(format: "%.3f", $0) }.joined(separator: ", ")); lower = \(lowerRatios.map { String(format: "%.3f", $0) }.joined(separator: ", ")). Snapshot released on clear.")
     }
 
 
@@ -402,8 +420,9 @@ struct ProjectionChecks {
                 let boundary = NSBitmapImageRep(data: try Data(contentsOf: boundaryURL))!
                 var row: [Int] = []
                 var components = [Int](repeating: 0, count: boundary.samplesPerPixel)
+                let sideEdgeRow = angle == 60 ? 48 : 72
                 for x in 0..<160 {
-                    boundary.getPixel(&components, atX: x, y: 72)
+                    boundary.getPixel(&components, atX: x, y: sideEdgeRow)
                     row.append(components[0])
                 }
                 var column: [Int] = []

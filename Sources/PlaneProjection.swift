@@ -2,11 +2,20 @@ import Foundation
 import simd
 
 struct ViewCalibration {
-    var distanceCM: Float = 60
-    var heightCM: Float = 34
-    var screenHeightCM: Float = 22.4
-    var frost: Float = 1
-    var perspective: Float = 1
+    var distanceCM: Float
+    var heightCM: Float
+    var screenHeightCM: Float
+    var frost: Float
+    var perspective: Float
+
+    init(distanceCM: Float = 60, heightCM: Float? = nil, screenHeightCM: Float = 22.4,
+         frost: Float = 1, perspective: Float = 1) {
+        self.distanceCM = distanceCM
+        self.heightCM = heightCM ?? screenHeightCM / 2
+        self.screenHeightCM = screenHeightCM
+        self.frost = frost
+        self.perspective = perspective
+    }
 }
 
 /// Projects a physical panel pixel onto the fixed upright desktop, through one eye point.

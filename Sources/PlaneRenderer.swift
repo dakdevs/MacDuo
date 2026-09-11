@@ -478,11 +478,13 @@ final class PlaneRenderer: NSObject, MTKViewDelegate {
         constexpr sampler sharpSample(coord::normalized, address::clamp_to_edge, filter::linear);
         constexpr sampler frostSample(coord::normalized, address::clamp_to_edge,
                                       filter::linear, mip_filter::linear);
-        float amount = u.style.y * u.style.y * u.style.z;
+        float heightWithinAperture = clamp(panelHeight / max(.0001, 1.0 - topRetreat), 0.0, 1.0);
+        float frostRamp = smoothstep(.1, 1.0, heightWithinAperture);
+        float verticalFrost = frostRamp * frostRamp;
+        float amount = u.style.y * u.style.y * u.style.z * verticalFrost;
         // Measured in source pixels and scaled by image height, so Retina snapshots
         // receive the same apparent diffusion. The hinge remains much clearer.
-        float radius = pow(u.style.y, 1.2) * u.style.z * 60 * u.texel.z
-                     * (.06 + .94 * pow(panelHeight, .85));
+        float radius = pow(u.style.y, 1.2) * u.style.z * 60 * u.texel.z * verticalFrost;
         float blurLevel = clamp(log2(max(1.0, radius / 4.4)), 0.0, u.texel.w);
         float blend = smoothstep(0.0, 4.4, radius);
         if (blend == 0 && sharpCoverage == 0) return float4(0,0,0,1);
@@ -520,7 +522,6 @@ final class PlaneRenderer: NSObject, MTKViewDelegate {
         color = mix(color, float3(.78,.84,.87) * coverage, min(.08, amount * .055));
         // Darken the visible upper material as it recedes, with the hinge as
         // the undimmed anchor. Frost0 disables this material treatment entirely.
-        float heightWithinAperture = clamp(panelHeight / max(.0001, 1.0 - topRetreat), 0.0, 1.0);
         float shade = 1.0 - .7 * retreatProgress * retreatProgress
                     * heightWithinAperture * heightWithinAperture * min(1.0, u.style.z);
         return float4(color * u.style.x * shade, 1);
