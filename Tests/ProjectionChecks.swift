@@ -24,9 +24,9 @@ struct ProjectionChecks {
         let renderer = try PlaneRenderer(view: view)
         try verifyGPU(renderer, output: output)
         try verifyFrost(renderer, output: output)
-        try verifyFortyFiveBrightness(renderer, output: output)
+        try verifyApertureAndShading(renderer, output: output)
         try await verifyPreparation()
-        print("PASS: identity, fixed hinge, finite mapping, independent ray-plane oracle, GPU orientation/colors/perspective, reopening, cleared frame, and closure fade.")
+        print("PASS: identity, fixed hinge, finite mapping, independent ray-plane oracle, GPU orientation/colors/perspective, top aperture/shading, reopening, cleared frame, and closure fade.")
         print("Rendered calibration images: \(output.path)")
     }
 
@@ -60,6 +60,18 @@ struct ProjectionChecks {
         // Independently worked eye-ray intersections in centimetres at45°,
         // with eye(0,34,60) and physical screen height22.4cm. The top pixel sees
         //58.37% down the upright image; the middle pixel sees82.35% down it.
+        for (angle, expected): (Float, Float) in [(90, 0), (60, 0.12), (45, 0.22), (30, 0.22), (120, 0)] {
+            let projection = PlaneProjection(degrees: angle, calibration: ViewCalibration())
+            try check(abs(projection.topRetreat - expected) < 0.000001,
+                      "The top aperture does not match its independently specified angle anchors.")
+        }
+        try check(PlaneProjection(degrees: 60, calibration: ViewCalibration(perspective: 0)).topRetreat == 0,
+                  "Flat mode must not create a top aperture.")
+        try check(abs(PlaneProjection(degrees: 60, calibration: ViewCalibration(perspective: 0.5)).topRetreat - 0.06) < 0.000001,
+                  "Perspective strength should also scale the depth cue.")
+        let nearUpright = PlaneProjection(degrees: 89.9, calibration: ViewCalibration()).topRetreat
+        try check(nearUpright > 0 && nearUpright < 0.00001,
+                  "Top retreat should begin with zero velocity at90°.")
         let fortyFive = PlaneProjection(degrees: 45, calibration: ViewCalibration())
         let top = fortyFive.sourceUV(SIMD2(0.5, 0))!
         let middle = fortyFive.sourceUV(SIMD2(0.5, 0.5))!
@@ -179,7 +191,7 @@ struct ProjectionChecks {
         try renderer.renderPNG(to: perspectiveURL, width: width, height: height)
         let perspective = NSBitmapImageRep(data: try Data(contentsOf: perspectiveURL))!
         let perspectiveExpectations: [(Int, Int, SIMD3<Float>)] = [
-            (64, 60, SIMD3(0, 0, 1)), (192, 60, SIMD3(1, 1, 0)),
+            (64, 52, SIMD3(0, 0, 1)), (64, 60, SIMD3(0, 0, 1)), (192, 60, SIMD3(1, 1, 0)),
             (5, 16, SIMD3(0, 0, 0))]
         for (x, y, expected) in perspectiveExpectations {
             var components = [Int](repeating: 0, count: perspective.samplesPerPixel)
@@ -274,18 +286,23 @@ struct ProjectionChecks {
         checker = nil
 
         func contrast(_ image: NSBitmapImageRep, yRange: Range<Int>) -> Double {
-            var total = 0.0
-            var squares = 0.0
-            var count = 0.0
+            var rowContrasts = 0.0
             var components = [Int](repeating: 0, count: image.samplesPerPixel)
             for y in yRange {
+                var total = 0.0
+                var squares = 0.0
+                var count = 0.0
                 for x in (width / 4)..<(width * 3 / 4) {
                     image.getPixel(&components, atX: x, y: y)
                     let value = Double(components[0]) / 255
                     total += value; squares += value * value; count += 1
                 }
+                let mean = total / count
+                // Normalize each row to its own mean. The new vertical shading
+                // must not masquerade as successful removal of checker detail.
+                rowContrasts += sqrt(max(0, squares / count - mean * mean)) / max(0.001, mean)
             }
-            return sqrt(max(0, squares / count - pow(total / count, 2)))
+            return rowContrasts / Double(yRange.count)
         }
         var upperRatios: [Double] = []
         var lowerRatio = 0.0
@@ -298,7 +315,8 @@ struct ProjectionChecks {
                 let url = output.appendingPathComponent("checker-\(Int(angle))-frost\(Int(strength)).png")
                 try renderer.renderPNG(to: url, width: width, height: height)
                 let image = NSBitmapImageRep(data: try Data(contentsOf: url))!
-                upper.append(contrast(image, yRange: 30..<150))
+                let visibleTop = Int(PlaneProjection(degrees: angle, calibration: renderer.calibration).topRetreat * Float(height))
+                upper.append(contrast(image, yRange: (visibleTop + 48)..<(visibleTop + 168)))
                 lower.append(contrast(image, yRange: 330..<380))
             }
             try check(upper[0] > 0.4, "Zero frost unexpectedly blurred the projected checkerboard.")
@@ -321,7 +339,7 @@ struct ProjectionChecks {
 
 
     @MainActor
-    private static func verifyFortyFiveBrightness(_ renderer: PlaneRenderer, output: URL) throws {
+    private static func verifyApertureAndShading(_ renderer: PlaneRenderer, output: URL) throws {
         var white: CVPixelBuffer?
         let attributes: [CFString: Any] = [kCVPixelBufferMetalCompatibilityKey: true,
                                           kCVPixelBufferIOSurfacePropertiesKey: [:]]
@@ -332,18 +350,114 @@ struct ProjectionChecks {
         CVPixelBufferUnlockBaseAddress(white!, [])
         try renderer.setFrame(white!)
         renderer.calibration = ViewCalibration()
+        var upperLuminance: [Int] = []
+        for (angle, sampleY, lowerY): (Float, Int, Int) in [(60, 59, 182), (45, 75, 184)] {
+            renderer.degrees = angle
+            let url = output.appendingPathComponent("gpu-\(Int(angle))-shaded-white.png")
+            try renderer.renderPNG(to: url, width: 320, height: 200)
+            let image = NSBitmapImageRep(data: try Data(contentsOf: url))!
+            var upper = [Int](repeating: 0, count: image.samplesPerPixel)
+            var lower = upper
+            image.getPixel(&upper, atX: 160, y: sampleY)
+            image.getPixel(&lower, atX: 160, y: lowerY)
+            // These coordinates sit80% of the visible height above the hinge.
+            // The specified shade curve predicts about80% light at60° and55% at45°;
+            // allow the independently tested Gaussian aperture a small influence.
+            let expected = angle == 60 ? 196...212 : 130...149
+            try check(expected.contains(upper[0]), "The upper material does not follow the requested progressive darkening.")
+            try check(lower[0] >= 240 && lower[0] > upper[0], "The hinge region should remain substantially brighter than the receding top.")
+            upperLuminance.append(upper[0])
+        }
+        try check(upperLuminance[1] < upperLuminance[0], "The visible upper material must darken further from60° to45°.")
+        renderer.degrees = 90
+        renderer.calibration.frost = 1.6
+        let uprightURL = output.appendingPathComponent("boundary-90.png")
+        try renderer.renderPNG(to: uprightURL, width: 320, height: 200)
+        let upright = NSBitmapImageRep(data: try Data(contentsOf: uprightURL))!
+        for (x, y) in [(0, 0), (319, 0), (0, 199), (319, 199)] {
+            var components = [Int](repeating: 0, count: upright.samplesPerPixel)
+            upright.getPixel(&components, atX: x, y: y)
+            try check(components[0] == 255 && components[1] == 255 && components[2] == 255,
+                      "At90° even the physical image corners must remain exactly unchanged.")
+        }
+        for angle: Float in [60, 45] {
+            var rows: [[Int]] = []
+            var columns: [[Int]] = []
+            for strength: Float in [0, 0.6, 1, 1.6] {
+                renderer.degrees = angle
+                renderer.calibration.frost = strength
+                let boundaryURL = output.appendingPathComponent("boundary-\(Int(angle))-frost\(strength).png")
+                try renderer.renderPNG(to: boundaryURL, width: 320, height: 200)
+                let boundary = NSBitmapImageRep(data: try Data(contentsOf: boundaryURL))!
+                var row: [Int] = []
+                var components = [Int](repeating: 0, count: boundary.samplesPerPixel)
+                for x in 0..<160 {
+                    boundary.getPixel(&components, atX: x, y: 72)
+                    row.append(components[0])
+                }
+                var column: [Int] = []
+                for y in 0..<200 {
+                    boundary.getPixel(&components, atX: 160, y: y)
+                    column.append(components[0])
+                }
+                columns.append(column)
+                // This row is below the top aperture. Normalize its uniform
+                // white interior to separate side-edge softness from the new
+                // aperture's Gaussian tail crossing that row at high strength.
+                let interior = max(1, row.last!)
+                rows.append(row.map { Int((Double($0) * 255 / Double(interior)).rounded()) })
+            }
+            // The independently specified retreat anchors are24 and44 rows
+            // in this200px output. The shader must mask, never rescale, the image.
+            let topEdge = angle == 60 ? 24 : 44
+            try check(columns[0].firstIndex(where: { $0 != 0 }) == topEdge,
+                      "The sharp top aperture does not land at the specified12%/22% retreat.")
+            try check(columns[0].dropFirst(topEdge).allSatisfy { $0 == 255 },
+                      "The aperture changed surviving white pixels or moved/dimmed the hinge with frost0.")
+            try check(columns[2][0] < 10 && columns[2][topEdge - 3] > 10
+                        && columns[2][topEdge + 3] < 245,
+                      "The top aperture must retain black separation and feather on both sides of its boundary.")
+            var topStep = 0
+            for y in 1..<(topEdge + 35) {
+                topStep = max(topStep, abs(columns[2][y] - columns[2][y - 1]))
+            }
+            try check(topStep < 35, "The frosted top aperture contains a hard boundary.")
+            // A white rectangle against black has a binary boundary without blur.
+            // Gaussian coverage must diffuse into both sides, create an ordered
+            // brightness ramp, and broaden as strength grows. No reference shader
+            // is used to predict its coverage or transition width.
+            try check(rows[0].allSatisfy { $0 == 0 || $0 == 255 },
+                      "Zero frost must preserve the sharp projected boundary.")
+            let edge = rows[0].firstIndex(where: { $0 == 255 })!
+            try check(edge > 8 && edge < 100, "The projected desktop did not form the expected interior side boundary.")
+            let widths = rows.map { $0.filter { $0 > 10 && $0 < 245 }.count }
+            try check(widths[0] == 0 && widths[1] > 0 && widths[2] > widths[1] && widths[3] > widths[2],
+                      "Gaussian edge width did not grow with frost at\(angle)°: \(widths).")
+            try check(rows[2][edge - 3] > 10 && rows[2][edge + 3] < 245,
+                      "Edge diffusion must extend both outside and inside the projected desktop.")
+            var largestStep = 0
+            for x in 1..<rows[2].count {
+                let delta = rows[2][x] - rows[2][x - 1]
+                try check(delta >= -1, "Gaussian boundary has a ringing or reversed brightness transition.")
+                largestStep = max(largestStep, abs(delta))
+            }
+            try check(largestStep < 50, "The Gaussian boundary still contains a hard pixel step at\(angle)°.")
+            print("PASS: \(Int(angle))° boundary widths at frost0/0.6/1/1.6 = \(widths); largest default pixel step\(largestStep)/255, with diffusion on both sides.")
+        }
+        renderer.calibration.perspective = 0
+        renderer.calibration.frost = 0
         renderer.degrees = 45
-        let url = output.appendingPathComponent("gpu-45-lit-white.png")
-        try renderer.renderPNG(to: url, width: 320, height: 200)
-        let image = NSBitmapImageRep(data: try Data(contentsOf: url))!
-        for (x, y) in [(80, 30), (160, 100), (240, 170)] {
-            var components = [Int](repeating: 0, count: image.samplesPerPixel)
-            image.getPixel(&components, atX: x, y: y)
-            try check(components[0] >= 250 && components[1] >= 250 && components[2] >= 250,
-                      "The45° GPU output dims a white screen despite the confirmed viewpoint.")
+        let flatURL = output.appendingPathComponent("aperture-flat45.png")
+        try renderer.renderPNG(to: flatURL, width: 320, height: 200)
+        let flat = NSBitmapImageRep(data: try Data(contentsOf: flatURL))!
+        for y in [0, 24, 44, 100, 199] {
+            var components = [Int](repeating: 0, count: flat.samplesPerPixel)
+            flat.getPixel(&components, atX: 160, y: y)
+            try check(components[0] == 255, "Flat mode with frost0 must not acquire an aperture or shading.")
         }
         renderer.clearFrame()
-        print("PASS: fully lit45° Gaussian-blurred GPU output preserves white-field luminance.")
+        renderer.calibration = ViewCalibration()
+        print("PASS: top aperture anchors, two-sided Gaussian feather, interior preservation, and progressive top shading; upper white levels at60/45° = \(upperLuminance).")
     }
 
     @MainActor

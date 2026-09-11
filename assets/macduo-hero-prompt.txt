@@ -1,0 +1,21 @@
+Generated with the built-in image-generation tool.
+
+Single-image composition prompt:
+
+Use case: product-mockup.
+Create a SINGLE hero product render based on the middle MacBook in the supplied reference, not a demonstration, not a diagram.
+
+One space-black MacBook Pro on a dark graphite studio surface, physical lid partly closed at about55 degrees, seen in a cinematic front three-quarter view. The defining visual is a beautiful optical illusion: the perceived desktop image appears to remain UPRIGHT at90 degrees above the hinge while the actual thin metal display lid folds forward. Show one clear luminous upright rectangle of abstract blue-violet-coral desktop with one pale rounded window, fading into frosted blur at its edges and toward its upper half. The image should read as a still-upright plane with visible depth, not wallpaper pasted flat onto the angled screen.
+
+Use the elegant conceptual cutaway effect from the center of the reference: the partly lowered physical screen is smoky dark glass with a crisp metal bezel and subtle transparency, while the perceived desktop remains vertically upright behind it. Keep one laptop, one upright image plane, a sharp realistic black keyboard and trackpad, and plausible hinge/metal geometry. The upright image stays hinge-anchored, rather than floating high above the computer. Soft diffused edges, restrained glow, no laser beams.
+
+Composition: laptop centered with generous negative space, about75% of image width, wide landscape premium GitHub README header. Refined soft studio lighting, dark background, realistic aluminum and contact shadow.
+Remove ALL demonstration features from the reference: absolutely no text, no title, no angle labels, no arrows, no cyan wireframes, no grid, no guide lines, no other laptops, no before/after. One polished illustrative product image only.
+
+Final image edit prompt:
+
+Edit only the image/light treatment in the supplied SINGLE MacBook Pro hero render. Preserve the one-laptop composition, partially closed metal lid, upright perceived desktop plane, hardware, background, and camera.
+
+Make the TOP of the upright perceived desktop progressively dissolve into DARK frosted blur. The top quarter should fade softly into the dark graphite background, with no bright cyan glowing upper border. Keep the lower half of the upright desktop recognizable and luminous, and progressively soften and darken the window and wallpaper toward the top. Feather all outer edges, particularly the upper corners. The effect should feel like the upright image recedes into a dark mist as the physical lid closes, rather than a brightly glowing hologram. Retain the upright orientation and hinge anchoring that distinguish this from a merely blurred laptop screen.
+
+Keep the physical metal and keyboard sharp. One image only. No text, no labels, no wireframes, no arrows, no additional computers or objects.

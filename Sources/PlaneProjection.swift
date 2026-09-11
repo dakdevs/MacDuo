@@ -66,6 +66,14 @@ struct PlaneProjection {
         return fraction * fraction * (3 - 2 * fraction)
     }
 
+    /// A separate aperture opens above the image to suggest depth. It never
+    /// rescales the texture or changes the physical eye-ray projection.
+    var topRetreat: Float {
+        guard degrees.isFinite else { return 0 }
+        let progress = min(1, max(0, (90 - degrees) / 45))
+        return progress * progress * (0.37 - 0.15 * progress) * perspectiveStrength
+    }
+
     var closingAmount: Float {
         guard degrees.isFinite else { return 0 }
         return min(1, max(0, (90 - degrees) / 60))

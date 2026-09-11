@@ -499,6 +499,11 @@ import CoreGraphics
         lastDiagnosticWrite = now
         let values: [String: Any] = [
             "pid": ProcessInfo.processInfo.processIdentifier,
+            "bundleIdentifier": Bundle.main.bundleIdentifier ?? "",
+            "eyeDistanceCM": calibration.distanceCM,
+            "eyeHeightCM": calibration.heightCM,
+            "screenHeightCM": calibration.screenHeightCM,
+            "perspectiveStrength": calibration.perspective,
             "measuredAngle": angle as Any? ?? NSNull(),
             "renderAngle": effectAngle as Any? ?? NSNull(),
             "smoothedAngle": motion.value(at: now) as Any? ?? NSNull(),

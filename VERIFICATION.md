@@ -15,10 +15,11 @@ The suite verifies:
 
 - Independent forward ray/plane targets, the identity projection at 90°, a fixed hinge, and clipping.
 - GPU color, orientation, full and reduced perspective, frame clearing, and closing fade.
-- The 45° mapping at an eye distance of 60 cm and height of 34 cm, full brightness, and strong Gaussian blur.
+- The 45° mapping at an eye distance of 60 cm and height of 34 cm, strong Gaussian blur, and progressive upper-image darkening.
+- Soft projected edges, a retreating top boundary, and an unchanged interior projection and hinge.
 - Hidden-window preparation of the first drawable, cancellation, and invalidation when a screenshot is replaced or cleared.
 - Sensor smoothing and bounded prediction through quantized motion, reversals, stops, and stale readings.
-- Entry from an unchanged image, eased opacity and geometry, a moving target, and reentry after hiding.
+- Immediate geometry tracking through late capture and fast closing, eased opacity, and reentry after hiding.
 - The real HID sensor, app signature, and Info.plist.
 
 Focused mutations that disable blur, smoothing, prediction, or entry easing fail the corresponding checks.

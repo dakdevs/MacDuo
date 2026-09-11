@@ -8,14 +8,26 @@ private struct RenderFailure: LocalizedError {
     var errorDescription: String? { message }
 }
 
-// Only strong, immutable references cross onto Metal's completion queue. The image
-// is never read or mutated there; releasing this lease returns it to the capture pool.
+// The completion queue owns these handles without reading or mutating image data.
+// Core Video's cache must outlive finalization of every texture it created, even
+// when an abandoned gesture destroys the renderer before the GPU finishes.
 private final class CapturedFrameLease: @unchecked Sendable {
-    let pixelBuffer: CVPixelBuffer?
-    let metalTexture: CVMetalTexture?
-    init(_ pixelBuffer: CVPixelBuffer?, _ metalTexture: CVMetalTexture?) {
+    private let textureCache: CVMetalTextureCache?
+    private var pixelBuffer: CVPixelBuffer?
+    private var metalTexture: CVMetalTexture?
+
+    init(_ pixelBuffer: CVPixelBuffer?, _ metalTexture: CVMetalTexture?, _ textureCache: CVMetalTextureCache?) {
+        self.textureCache = textureCache
         self.pixelBuffer = pixelBuffer
         self.metalTexture = metalTexture
+    }
+
+    deinit {
+        // Release the texture while the cache is still strongly owned. These
+        // properties are private and only cleared after the lease's final owner.
+        metalTexture = nil
+        pixelBuffer = nil
+        withExtendedLifetime(textureCache) {}
     }
 }
 
@@ -92,7 +104,7 @@ final class PlaneRenderer: NSObject, MTKViewDelegate {
         frameGeneration += 1
         isReadyForPresentation = false
         let generation = frameGeneration
-        let lease = CapturedFrameLease(pixelBuffer, metalTexture)
+        let lease = CapturedFrameLease(pixelBuffer, metalTexture, textureCache)
         preparation.addCompletedHandler { [weak self] result in
             withExtendedLifetime(lease) {}
             guard result.status == .error else { return }
@@ -376,7 +388,7 @@ final class PlaneRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<PlaneUniforms>.stride, index: 0)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             // Capture-backed IOSurfaces must remain retained until the GPU is finished.
-            let lease = CapturedFrameLease(sourcePixelBuffer, sourceMetalTexture)
+            let lease = CapturedFrameLease(sourcePixelBuffer, sourceMetalTexture, textureCache)
             command.addCompletedHandler { _ in withExtendedLifetime(lease) {} }
         }
         encoder.endEncoding()
@@ -393,6 +405,27 @@ final class PlaneRenderer: NSObject, MTKViewDelegate {
         float2 p = corners[id];
         return { float4(p,0,1), float2(p.x * .5 + .5, .5 - p.y * .5) };
     }
+    // Gaussian convolution of the desktop's rectangular coverage mask. This
+    // softens its projected boundary on both sides rather than adding a vignette.
+    float normalCDF(float x) {
+        float magnitude = abs(x) * .7071067812;
+        float t = 1.0 / (1.0 + .3275911 * magnitude);
+        float polynomial = (((((1.061405429 * t - 1.453152027) * t)
+                            + 1.421413741) * t - .284496736) * t + .254829592) * t;
+        float erf = 1.0 - polynomial * exp(-magnitude * magnitude);
+        return .5 + .5 * copysign(erf, x);
+    }
+    float rectangleCoverage(float2 uv, float2 sigma) {
+        float2 nearEdge = uv / sigma;
+        float2 farEdge = (uv - 1.0) / sigma;
+        return clamp((normalCDF(nearEdge.x) - normalCDF(farEdge.x))
+                   * (normalCDF(nearEdge.y) - normalCDF(farEdge.y)), 0.0, 1.0);
+    }
+    float pyramidSigma(float level) {
+        // Each cached level adds sigma2.2 after halving its dimensions. Gaussian
+        // variances add, giving4.4*sqrt(1+4+...+4^level) in source-image pixels.
+        return 4.4 * sqrt((exp2(2.0 * (level + 1.0)) - 1.0) / 3.0);
+    }
     fragment float4 planeFragment(Vertex in [[stage_in]],
                                   texture2d<float> desktop [[texture(0)]],
                                   texture2d<float> frost [[texture(1)]],
@@ -407,7 +440,13 @@ final class PlaneRenderer: NSObject, MTKViewDelegate {
                 1 - panelHeight * (u.ray.x * u.ray.y - u.ray.w * u.ray.z) / denominator);
             uv = mix(in.uv, projected, u.style.w);
         }
-        if (any(uv < 0) || any(uv > 1)) return float4(0,0,0,1);
+        // A panel-space aperture provides top separation without moving any
+        // surviving texture coordinates. This is the same curve as topRetreat.
+        float retreatProgress = min(1.0, u.style.y * (4.0 / 3.0));
+        float topRetreat = retreatProgress * retreatProgress
+                         * (.37 - .15 * retreatProgress) * u.style.w;
+        float sharpCoverage = all(uv >= 0) && all(uv <= 1)
+                           && in.uv.y >= topRetreat ? 1.0 : 0.0;
         constexpr sampler sharpSample(coord::normalized, address::clamp_to_edge, filter::linear);
         constexpr sampler frostSample(coord::normalized, address::clamp_to_edge,
                                       filter::linear, mip_filter::linear);
@@ -417,18 +456,46 @@ final class PlaneRenderer: NSObject, MTKViewDelegate {
         float radius = pow(u.style.y, 1.2) * u.style.z * 60 * u.texel.z
                      * (.06 + .94 * pow(panelHeight, .85));
         float blurLevel = clamp(log2(max(1.0, radius / 4.4)), 0.0, u.texel.w);
-        float3 color = desktop.sample(sharpSample, uv).rgb;
-        if (radius > 0) {
+        float blend = smoothstep(0.0, 4.4, radius);
+        if (blend == 0 && sharpCoverage == 0) return float4(0,0,0,1);
+        float coverage = sharpCoverage;
+        float3 color = desktop.sample(sharpSample, uv).rgb * sharpCoverage;
+        if (blend > 0) {
+            // Match the two Gaussian levels used by trilinear color sampling.
+            float low = floor(blurLevel);
+            float high = min(low + 1.0, u.texel.w);
+            float lowSigma = pyramidSigma(low);
+            float highSigma = pyramidSigma(high);
+            float lowCoverage = rectangleCoverage(uv, u.texel.xy * lowSigma);
+            float highCoverage = rectangleCoverage(uv, u.texel.xy * highSigma);
+            if (topRetreat > 0) {
+                // Convert source-image diffusion to panel height at the aperture.
+                // The eye-ray derivative preserves the same apparent Gaussian
+                // softness as the projected material; no UV rescaling is applied.
+                float edgeDenominator = u.ray.x - (1.0 - topRetreat) * u.ray.z;
+                float fullScale = (u.ray.x * u.ray.y - u.ray.w * u.ray.z) * u.ray.x
+                                / (edgeDenominator * edgeDenominator);
+                float sourceYScale = max(.0001, mix(1.0, fullScale, u.style.w));
+                float panelDistance = in.uv.y - topRetreat;
+                lowCoverage *= normalCDF(panelDistance * sourceYScale / (u.texel.y * lowSigma));
+                highCoverage *= normalCDF(panelDistance * sourceYScale / (u.texel.y * highSigma));
+            }
+            float blurredCoverage = mix(lowCoverage, highCoverage, fract(blurLevel));
             float3 blurred = frost.sample(frostSample, uv, level(blurLevel)).rgb;
-            color = mix(color, blurred, smoothstep(0.0, 4.4, radius));
+            coverage = mix(sharpCoverage, blurredCoverage, blend);
+            color = mix(color, blurred * blurredCoverage, blend);
         }
-        // Subtle cool frost, with no blur, grain or tint at the upright angle.
+        // Keep color premultiplied by coverage so tint cannot light up the black
+        // exterior, and zero frost retains exact, sharp projected bounds.
         float luma = dot(color, float3(.2126,.7152,.0722));
         color = mix(color, float3(luma), min(.32, amount * .22));
-        color = mix(color, float3(.78,.84,.87), min(.08, amount * .055));
-        float edge = smoothstep(0.0, max(.000001, u.style.y * .004),
-            min(min(uv.x,1-uv.x), min(uv.y,1-uv.y)));
-        return float4(color * u.style.x * edge, 1);
+        color = mix(color, float3(.78,.84,.87) * coverage, min(.08, amount * .055));
+        // Darken the visible upper material as it recedes, with the hinge as
+        // the undimmed anchor. Frost0 disables this material treatment entirely.
+        float heightWithinAperture = clamp(panelHeight / max(.0001, 1.0 - topRetreat), 0.0, 1.0);
+        float shade = 1.0 - .7 * retreatProgress * retreatProgress
+                    * heightWithinAperture * heightWithinAperture * min(1.0, u.style.z);
+        return float4(color * u.style.x * shade, 1);
     }
     """#
 }
